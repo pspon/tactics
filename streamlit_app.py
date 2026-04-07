@@ -43,9 +43,10 @@ from src.web_utils import (
     signup_user,
 )
 
-CARDS_DIR = Path("output/cards")
-STATIC_FRONT = Path("static/cards/front")
-STATIC_BACK = Path("static/cards/back")
+_APP_DIR = Path(__file__).parent
+CARDS_DIR = _APP_DIR / "output" / "cards"
+STATIC_FRONT = _APP_DIR / "static" / "cards" / "front"
+STATIC_BACK = _APP_DIR / "static" / "cards" / "back"
 
 
 def _read_secret(key: str) -> str:
@@ -113,7 +114,7 @@ def fetch_card_library() -> int:
         # ---- metadata (optional) -----------------------------------------
         src_meta = tmp_path / "metadata"
         if src_meta.exists():
-            meta_dir = Path("output/metadata")
+            meta_dir = _APP_DIR / "output" / "metadata"
             meta_dir.mkdir(parents=True, exist_ok=True)
             for item in src_meta.iterdir():
                 # Never overwrite runtime credentials from the private repo
