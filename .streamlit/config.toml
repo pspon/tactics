@@ -1,0 +1,11 @@
+[server]
+# Serve files from the ./static/ directory at /app/static/
+# Required for card images to load in the board component.
+enableStaticServing = true
+
+[theme]
+base = "light"
+
+[client]
+showErrorDetails = false
+toolbarMode = "minimal"

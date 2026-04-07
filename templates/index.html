@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Card Navigator</title>
+
+<style>
+:root {
+    --bg-color: #f4f4f9;
+    --dot-color: #d1d1d6;
+    --primary: #2b6cb0;
+    --selection-stroke: #2b6cb0;
+    --selection-fill: rgba(43, 108, 176, 0.1);
+}
+
+html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    font-family: 'Inter', system-ui, sans-serif;
+    background-color: var(--bg-color);
+}
+
+/* ---------------- SIDEBAR ---------------- */
+#sidebar { position: fixed; left:0; top:0; bottom:0; width:240px; background:white; box-shadow:2px 0 10px rgba(0,0,0,0.1); padding:16px; overflow-y:auto; transition: transform 0.3s ease; z-index:200; padding-top: 60px}
+#sidebar.collapsed { transform: translateX(-100%);}
+#sidebar h3 { margin-top:0; font-size:16px; margin-bottom:8px;}
+#sidebar h4 { margin-top:0; margin-left:10px; font-size:14px; margin-bottom:4px; display:inline-block; cursor:pointer;}
+#sidebar-toggle { position: fixed; left:0; top:16px; z-index:300; background:var(--primary); color:white; border:none; padding:6px 12px; border-radius:0 4px 4px 0; cursor:pointer;}
+#sidebar input[type="text"] { width:90%; padding:6px 8px; border-radius:4px; border:1px solid #ccc; margin-bottom:12px;}
+#sidebar label { display:block; margin-bottom:6px; cursor:pointer;}
+#sidebar input[type="checkbox"] { margin-right:6px;}
+
+/* Collapsible Deck Tree */
+
+.deck-header { 
+    font-weight: bold; 
+    cursor: pointer; 
+    margin-top: 8px; 
+    display: flex; 
+    align-items: center; 
+    gap: 4px; 
+}
+
+.deck-header h4 {
+    margin: 0;
+    line-height: 1.2;
+}
+
+.deck-header input[type="checkbox"] {
+    margin: 0;
+    flex-shrink: 0;
+}
+
+.deck-cards label { display:block; margin-bottom:4px; cursor:pointer; font-size:13px; }
+
+/* ---------------- UI DOCK ---------------- */
+#ui-dock { position: fixed; bottom:24px; left:50%; transform: translateX(-50%); background:white; padding:8px 16px; display:flex; gap:12px; z-index:100; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.15); align-items:center;}
+button { background:white; border:1px solid #ddd; padding:6px 12px; border-radius:6px; cursor:pointer; font-weight:500; transition:background 0.1s;}
+button:hover{background:#f9f9f9;} button:active{background:#eee;}
+
+/* ---------------- CANVAS ---------------- */
+#viewport { position:absolute; inset:0; cursor:default; background-image:radial-gradient(var(--dot-color) 1px, transparent 1px); background-size:24px 24px;}
+#viewport.panning { cursor:grabbing;}
+#board { position:absolute; top:0; left:0; transform-origin:0 0; will-change:transform;}
+
+/* ---------------- CARDS ---------------- */
+.card { position:absolute; width:525px; height:863px; background:white; border:1px solid #ddd; border-radius:8px; cursor:grab; user-select:none; box-shadow:0 2px 5px rgba(0,0,0,0.05); transition:box-shadow 0.2s, outline 0.1s; overflow:hidden; display:flex; flex-direction:column;}
+.card:hover { box-shadow:0 5px 15px rgba(0,0,0,0.1);}
+.card.selected { outline:2px solid var(--primary); box-shadow:0 0 0 4px rgba(43,108,176,0.2); z-index:10;}
+.card.hidden { display:none; pointer-events:none;}
+.card-image-wrapper { width:100%; height:100%; background:#eee; display:flex; align-items:center; justify-content:center; overflow:hidden;}
+.card img { width:100%; height:100%; object-fit:cover; pointer-events:none;}
+.card-meta { padding:10px; font-size:12px; color:#555; background:white; border-top:1px solid #eee; display:none;} 
+.show-names .card-meta { display:block; } 
+
+/* ---------------- SELECTION BOX ---------------- */
+#selection-box { position:absolute; background:var(--selection-fill); border:1px solid var(--selection-stroke); display:none; pointer-events:none; z-index:999;}
+
+/* ---------------- OVERLAY ---------------- */
+#overlay { position:fixed; inset:0; background:rgba(0,0,0,0.7); display:none; align-items:center; justify-content:center; z-index:1000; backdrop-filter:blur(4px);}
+#overlay img { max-width:90%; max-height:90%; border-radius:4px; box-shadow:0 20px 60px rgba(0,0,0,0.5);}
+</style>
+</head>
+<body>
+
+<!-- ---------------- SIDEBAR ---------------- -->
+<button id="sidebar-toggle">☰ Filters</button>
+<div id="sidebar" class="collapsed">
+    <h3>Search Cards</h3>
+    <input type="text" id="cardSearch" placeholder="Type card name..." />
+    <h3>Decks</h3>
+    <div id="deckTree">
+        {% for theme in themes %}
+        <div class="deck">
+            <div class="deck-header">
+                <input type="checkbox" class="theme-checkbox">
+                <h4>{{ theme }}</h4>
+            </div>
+            <div class="deck-cards" style="padding-left:12px; display:none;"></div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- ---------------- UI DOCK ---------------- -->
+<div id="ui-dock">
+    <button id="btn-gather">Gather</button>
+    <button id="btn-flip">Flip</button>
+    <button id="btn-reset">Reset View</button>
+    <button id="btn-toggle-names">Toggle Names</button>
+    <button id="btn-hide-selected">Hide Selected</button>
+    <button id="btn-snap-grid">Snap to Grid</button>
+    <button id="btn-save-layout">Save Layout</button>
+    <select id="layout-select" style="margin-left:12px;"><option value="">Load Layout...</option></select>
+    <button id="btn-delete-layout">Delete Layout</button>
+</div>
+
+<div id="viewport">
+    <div id="board">
+        {% for card in cards %}
+        <div class="card"
+             data-deck="{{ card.theme }}"
+             data-filename="{{ card.filename }}"
+             data-type="{{ card.type }}"
+             style="left: {{ loop.index0 % 8 * 545 }}px;
+                    top: {{ loop.index0 // 8 * 883 }}px;">
+            <div class="card-image-wrapper">
+                <img src="/card/front/{{ card.filename }}">
+            </div>
+            <div class="card-meta"><strong>{{ card.name }}</strong></div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<div id="selection-box"></div>
+<div id="overlay"><img /></div>
+
+<script>
+/* ---------------- STATE ---------------- */
+const viewport = document.getElementById('viewport');
+const board = document.getElementById('board');
+let cards = [...document.querySelectorAll('.card')];
+let scale = 0.3, panX = 0, panY = 0;
+let isPanning = false, isSpacePressed = false, panStartX = 0, panStartY = 0;
+let showNames = false, isSelecting = false, selectStartX = 0, selectStartY = 0;
+
+/* ---------------- SIDEBAR ---------------- */
+const sidebar = document.getElementById('sidebar');
+document.getElementById('sidebar-toggle').addEventListener('click', () => {
+    sidebar.classList.toggle('collapsed');
+});
+
+/* ---------------- FILTER ---------------- */
+function filterCards(){
+    const searchVal=document.getElementById('cardSearch').value.toLowerCase();
+    cards.forEach(card=>{
+        const cardName=card.querySelector('.card-meta strong').textContent.toLowerCase();
+        const match = cardName.includes(searchVal) && !card.classList.contains('hidden-by-deck-filter');
+        card.classList.toggle('hidden', !match);
+    });
+    updateDeckTree();
+}
+document.getElementById('cardSearch').addEventListener('input', filterCards);
+
+/* ---------------- DECK TREE ---------------- */
+const deckTree = document.getElementById('deckTree');
+
+function updateDeckTree() {
+    document.querySelectorAll('.deck-cards').forEach(dc => dc.innerHTML = '');
+    const decks = [...new Set(cards.map(c => c.dataset.deck))];
+    decks.forEach(deck => {
+        const container = [...deckTree.querySelectorAll('.deck')].find(d => d.querySelector('h4').textContent === deck);
+        if(!container) return;
+        const cardContainer = container.querySelector('.deck-cards');
+        const themeCheckbox = container.querySelector('.theme-checkbox');
+        const deckCards = cards.filter(c => c.dataset.deck === deck);
+
+        // Group cards by type
+        const types = {};
+        deckCards.forEach(card => {
+            const type = card.dataset.type || 'Unknown';
+            if (!types[type]) types[type] = [];
+            types[type].push(card);
+        });
+
+        // Keep types in order from card_types.json
+        const sortedTypes = Object.keys(types);
+
+        sortedTypes.forEach(type => {
+            const typeCards = types[type];
+            const typeDiv = document.createElement('div');
+            typeDiv.className = 'type-container';
+            typeDiv.style.marginLeft = '10px';
+
+            // Type header
+            const typeHeader = document.createElement('div');
+            typeHeader.className = 'type-header';
+            typeHeader.style.display = 'flex';
+            typeHeader.style.alignItems = 'center';
+            typeHeader.style.gap = '4px';
+            typeHeader.style.marginTop = '4px';
+            typeHeader.style.cursor = 'pointer';
+
+            const typeCheckbox = document.createElement('input');
+            typeCheckbox.type = 'checkbox';
+            typeCheckbox.className = 'type-checkbox';
+
+            const typeLabel = document.createElement('h5');
+            typeLabel.textContent = type;
+            typeLabel.style.margin = '0';
+            typeLabel.style.fontSize = '13px';
+
+            typeHeader.appendChild(typeCheckbox);
+            typeHeader.appendChild(typeLabel);
+            typeDiv.appendChild(typeHeader);
+
+            // Type cards container
+            const typeCardContainer = document.createElement('div');
+            typeCardContainer.className = 'type-cards';
+            typeCardContainer.style.paddingLeft = '12px';
+            typeCardContainer.style.display = 'none'; // Collapsed by default
+
+            typeCards.forEach(card => {
+                const label = document.createElement('label');
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.checked = !card.classList.contains('hidden');
+                cb.addEventListener('change', () => {
+                    card.classList.toggle('hidden', !cb.checked);
+                    updateTypeCheckbox(typeCheckbox, typeCardContainer);
+                    updateThemeCheckbox(themeCheckbox, cardContainer);
+                });
+                label.appendChild(cb);
+                label.append(' ' + card.querySelector('.card-meta strong').textContent);
+                label.dataset.filename = card.dataset.filename;
+                typeCardContainer.appendChild(label);
+            });
+
+            typeDiv.appendChild(typeCardContainer);
+            cardContainer.appendChild(typeDiv);
+
+            // Type checkbox handler
+            typeCheckbox.addEventListener('change', () => {
+                typeCards.forEach((c,i)=>{
+                    const cb = typeCardContainer.querySelectorAll('input[type="checkbox"]')[i];
+                    cb.checked = typeCheckbox.checked;
+                    c.classList.toggle('hidden', !cb.checked);
+                });
+                updateTypeCheckbox(typeCheckbox, typeCardContainer);
+                updateThemeCheckbox(themeCheckbox, cardContainer);
+            });
+
+            // Type header click to toggle
+            typeHeader.addEventListener('click', (e) => {
+                if (e.target === typeCheckbox) return;
+                typeCardContainer.style.display = typeCardContainer.style.display === 'none' ? 'block' : 'none';
+            });
+
+            updateTypeCheckbox(typeCheckbox, typeCardContainer);
+        });
+
+        themeCheckbox.addEventListener('change', () => {
+            // Check/uncheck all types and cards
+            cardContainer.querySelectorAll('.type-checkbox').forEach(tc => {
+                tc.checked = themeCheckbox.checked;
+                // Directly hide/show cards for this type
+                const typeDiv = tc.closest('.type-container');
+                const typeCardContainer = typeDiv.querySelector('.type-cards');
+                const cardCheckboxes = typeCardContainer.querySelectorAll('input[type="checkbox"]');
+                cardCheckboxes.forEach(cb => {
+                    cb.checked = tc.checked;
+                    const card = cards.find(c => c.dataset.filename === cb.parentElement.dataset.filename);
+                    if (card) {
+                        card.classList.toggle('hidden', !tc.checked);
+                    }
+                });
+                updateTypeCheckbox(tc, typeCardContainer);
+            });
+            updateThemeCheckbox(themeCheckbox, cardContainer);
+        });
+
+        updateThemeCheckbox(themeCheckbox, cardContainer);
+    });
+
+    document.querySelectorAll('.deck-header h4').forEach(header => {
+        if (header.classList.contains('js-listener-attached')) return;
+        header.addEventListener('click', () => {
+            const cardList = header.parentElement.nextElementSibling;
+            cardList.style.display = cardList.style.display === 'none' ? 'block' : 'none';
+        });
+        header.classList.add('js-listener-attached');
+    });
+
+}
+
+function updateThemeCheckbox(themeCheckbox, cardContainer){
+    const childCheckboxes = [...cardContainer.querySelectorAll('input[type="checkbox"]')];
+    const checked = childCheckboxes.filter(cb=>cb.checked).length;
+    if(checked === 0) { themeCheckbox.checked=false; themeCheckbox.indeterminate=false; }
+    else if(checked === childCheckboxes.length) { themeCheckbox.checked=true; themeCheckbox.indeterminate=false; }
+    else { themeCheckbox.checked=true; themeCheckbox.indeterminate=true; }
+}
+
+function updateTypeCheckbox(typeCheckbox, typeCardContainer){
+    const childCheckboxes = [...typeCardContainer.querySelectorAll('input[type="checkbox"]')];
+    const checked = childCheckboxes.filter(cb=>cb.checked).length;
+    if(checked === 0) { typeCheckbox.checked=false; typeCheckbox.indeterminate=false; }
+    else if(checked === childCheckboxes.length) { typeCheckbox.checked=true; typeCheckbox.indeterminate=false; }
+    else { typeCheckbox.checked=true; typeCheckbox.indeterminate=true; }
+}
+
+/* ---------------- VIEWPORT ---------------- */
+function updateView(){ 
+    board.style.transform = `translate(${panX}px,${panY}px) scale(${scale})`; 
+    viewport.style.backgroundPosition = `${panX}px ${panY}px`; 
+    viewport.style.backgroundSize = `${24*scale}px ${24*scale}px`; 
+}
+window.addEventListener('keydown', e => {if(e.code==='Space'&&!isSpacePressed){isSpacePressed=true;viewport.style.cursor='grab';e.preventDefault();}});
+window.addEventListener('keyup', e => {if(e.code==='Space'){isSpacePressed=false;viewport.style.cursor='default';isPanning=false;}});
+
+/* ---------------- CARD ---------------- */
+const cardWidth=525, cardHeight=863, marginX=20, marginY=20, spacingX=cardWidth+marginX, spacingY=cardHeight+marginY;
+function getPos(el){return {left:parseFloat(el.style.left)||0, top:parseFloat(el.style.top)||0};}
+
+let isDraggingCards=false;
+cards.forEach(card=>{
+    card.addEventListener('mousedown', e=>{
+        if(isSpacePressed||e.button!==0) return;
+        e.stopPropagation();
+        const isSelected=card.classList.contains('selected');
+        if(e.shiftKey) card.classList.toggle('selected');
+        else if(!isSelected){deselectAll(); card.classList.add('selected');}
+        isDraggingCards=true;
+        const initialMouseX=e.clientX, initialMouseY=e.clientY;
+        const selectedCards=document.querySelectorAll('.card.selected');
+        const initialPositions=Array.from(selectedCards).map(c=>({el:c,...getPos(c)}));
+        function moveCards(ev){const deltaX=(ev.clientX-initialMouseX)/scale; const deltaY=(ev.clientY-initialMouseY)/scale; initialPositions.forEach(p=>{p.el.style.left=(p.left+deltaX)+'px'; p.el.style.top=(p.top+deltaY)+'px';});}
+        function stopDrag(){window.removeEventListener('mousemove',moveCards); window.removeEventListener('mouseup',stopDrag); isDraggingCards=false;}
+        window.addEventListener('mousemove',moveCards); window.addEventListener('mouseup',stopDrag);
+    });
+    card.addEventListener('dblclick', e=>{e.stopPropagation(); openOverlay(card);});
+});
+
+function deselectAll(){cards.forEach(c=>c.classList.remove('selected'));}
+function openOverlay(card){const overlay=document.getElementById('overlay'); const img=overlay.querySelector('img'); img.src=card.querySelector('img').src; overlay.style.display='flex'; overlay.dataset.cardId = card.dataset.filename;}
+
+/* ---------------- SELECTION BOX & PAN ---------------- */
+viewport.addEventListener('mousedown', e => {
+    if(e.button===1 || (isSpacePressed && e.button===0)){
+        isPanning = true; panStartX = e.clientX - panX; panStartY = e.clientY - panY; viewport.classList.add('panning'); e.preventDefault(); return;
+    }
+    if(e.target===viewport||e.target===board){
+        deselectAll();
+        isSelecting = true;
+        selectStartX = (e.clientX - panX) / scale;
+        selectStartY = (e.clientY - panY) / scale;
+        const box = document.getElementById('selection-box');
+        box.style.display = 'block';
+        box.style.left = e.clientX+'px';
+        box.style.top = e.clientY+'px';
+        box.style.width = '0px';
+        box.style.height = '0px';
+    }
+});
+viewport.addEventListener('mousemove', e => {
+    if(isPanning){panX=e.clientX-panStartX; panY=e.clientY-panStartY; updateView(); return;}
+    if(isSelecting){
+        const box = document.getElementById('selection-box');
+        const currentX = (e.clientX - panX)/scale;
+        const currentY = (e.clientY - panY)/scale;
+        const left = Math.min(selectStartX, currentX)*scale + panX;
+        const top = Math.min(selectStartY, currentY)*scale + panY;
+        const width = Math.abs(currentX - selectStartX)*scale;
+        const height = Math.abs(currentY - selectStartY)*scale;
+        box.style.left = left+'px'; box.style.top = top+'px'; box.style.width = width+'px'; box.style.height = height+'px';
+
+        const rect = {left: Math.min(selectStartX,currentX), top: Math.min(selectStartY,currentY), right: Math.max(selectStartX,currentX), bottom: Math.max(selectStartY,currentY)};
+        cards.forEach(card=>{
+            if(card.classList.contains('hidden')) return;
+            const pos = getPos(card);
+            const cardRect = {left: pos.left, top: pos.top, right: pos.left + cardWidth, bottom: pos.top + cardHeight};
+            const overlap = !(cardRect.left > rect.right || cardRect.right < rect.left || cardRect.top > rect.bottom || cardRect.bottom < rect.top);
+            card.classList.toggle('selected', overlap);
+        });
+    }
+});
+window.addEventListener('mouseup', e => {
+    if(isPanning){isPanning=false; viewport.classList.remove('panning');}
+    if(isSelecting){isSelecting=false; document.getElementById('selection-box').style.display='none';}
+});
+
+viewport.addEventListener('wheel', e => {
+    e.preventDefault();
+    const zoomIntensity=0.1;
+    const wheel = e.deltaY<0?1:-1;
+    const zoom = Math.exp(wheel*zoomIntensity);
+    const rect=viewport.getBoundingClientRect();
+    const mouseX=e.clientX-rect.left;
+    const mouseY=e.clientY-rect.top;
+    const worldX=(mouseX-panX)/scale;
+    const worldY=(mouseY-panY)/scale;
+    scale*=zoom; scale=Math.min(Math.max(0.1,scale),5);
+    panX=mouseX-worldX*scale; panY=mouseY-worldY*scale;
+    updateView();
+},{passive:false});
+
+/* ---------------- UI ACTIONS ---------------- */
+document.getElementById('btn-gather').onclick=()=>{
+    let toGather = cards.filter(c=>c.classList.contains('selected'));
+    if(toGather.length === 0) {
+        toGather = cards.filter(c=>!c.classList.contains('hidden'));
+    }
+    if(toGather.length === 0) return;
+    toGather.sort((a,b)=>{const pa=getPos(a), pb=getPos(b); if(pa.top===pb.top) return pa.left-pb.left; return pa.top-pb.top;});
+    const cols=Math.ceil(Math.sqrt(toGather.length));
+    toGather.forEach((c,i)=>{c.style.left=(i%cols)*spacingX+'px'; c.style.top=Math.floor(i/cols)*spacingY+'px';});
+    updateDeckTree();
+};
+document.getElementById('btn-flip').onclick=()=>{flipSelectedCards();};
+document.getElementById('btn-reset').onclick=()=>{
+    // Show all cards
+    cards.forEach(card => card.classList.remove('hidden'));
+    // Reset positions to original grid
+    cards.forEach((card, i) => {
+        card.style.left = (i % 8 * 545) + 'px';
+        card.style.top = Math.floor(i / 8) * 883 + 'px';
+    });
+    // Reset view
+    panX=0; panY=0; scale=0.3; updateView(); updateDeckTree();
+};
+document.getElementById('btn-toggle-names').onclick=()=>{showNames=!showNames; document.body.classList.toggle('show-names',showNames); updateDeckTree();};
+document.getElementById('btn-hide-selected').onclick=()=>{hideSelectedCards();};
+document.getElementById('btn-snap-grid').onclick=()=>{snapToGrid();};
+document.getElementById('overlay').onclick=()=>{document.getElementById('overlay').style.display='none';};
+
+/* ---------------- KEY ACTIONS ---------------- */
+window.addEventListener('keydown', e=>{
+    const overlay = document.getElementById('overlay');
+    if(overlay.style.display==='flex' && (e.code==='ArrowLeft'||e.code==='ArrowRight')){
+        e.preventDefault();
+        flipSelectedCards(true);
+    }
+    else if(e.code==='Escape'){ overlay.style.display='none'; }
+    else if(e.code==='Delete'){ hideSelectedCards(); }
+});
+
+/* ---------------- FLIP LOGIC ---------------- */
+function flipSelectedCards(isOverlay=false){
+    let selected = document.querySelectorAll('.card.selected');
+    if(isOverlay){
+        const overlay = document.getElementById('overlay');
+        const cardId = overlay.dataset.cardId;
+        selected = cards.filter(c=>c.dataset.filename===cardId);
+    }
+    selected.forEach(card=>{
+        const img = card.querySelector('img');
+        img.src = img.src.includes('/front/')?img.src.replace('/front/','/back/'):img.src.replace('/back/','/front/');
+        if(isOverlay){
+            document.getElementById('overlay').querySelector('img').src = img.src;
+        }
+    });
+}
+
+function hideSelectedCards(){
+    document.querySelectorAll('.card.selected').forEach(c=>{c.classList.add('hidden'); c.classList.remove('selected');});
+    updateDeckTree();
+}
+
+function snapToGrid(){
+    const visible = cards.filter(c => !c.classList.contains('hidden'));
+    visible.forEach(card => {
+        const pos = getPos(card);
+        const i = Math.round(pos.left / spacingX);
+        const j = Math.round(pos.top / spacingY);
+        card.style.left = i * spacingX + 'px';
+        card.style.top = j * spacingY + 'px';
+    });
+    updateDeckTree();
+}
+
+/* ---------------- LAYOUT SAVE/LOAD ---------------- */
+function getCurrentLayout() {
+    const layout = {
+        cards: [],
+        view: {panX, panY, scale}
+    };
+    cards.forEach(card => {
+        const pos = getPos(card);
+        const hidden = card.classList.contains('hidden');
+        const flipped = card.querySelector('img').src.includes('/back/');
+        layout.cards.push({
+            filename: card.dataset.filename,
+            left: pos.left,
+            top: pos.top,
+            hidden,
+            flipped
+        });
+    });
+    return layout;
+}
+
+function applyLayout(layout) {
+    cards.forEach(c => {
+        c.classList.remove('hidden');
+        const img = c.querySelector('img');
+        img.src = img.src.replace('/back/', '/front/');
+    });
+    layout.cards.forEach(cardData => {
+        const card = cards.find(c => c.dataset.filename === cardData.filename);
+        if (card) {
+            card.style.left = cardData.left + 'px';
+            card.style.top = cardData.top + 'px';
+            if (cardData.hidden) card.classList.add('hidden');
+            if (cardData.flipped) {
+                const img = card.querySelector('img');
+                img.src = img.src.replace('/front/', '/back/');
+            }
+        }
+    });
+    panX = layout.view.panX;
+    panY = layout.view.panY;
+    scale = layout.view.scale;
+    updateView();
+}
+
+function loadLayoutList() {
+    fetch('/list_layouts').then(r => r.json()).then(data => {
+        const select = document.getElementById('layout-select');
+        select.innerHTML = '<option value="">Load Layout...</option>';
+        data.layouts.forEach(name => {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            select.appendChild(option);
+        });
+    });
+}
+
+document.getElementById('btn-save-layout').onclick = () => {
+    const name = prompt('Enter layout name:');
+    if (!name) return;
+    const layout = getCurrentLayout();
+    fetch('/save_layout', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name, layout})
+    }).then(() => {
+        loadLayoutList();
+    });
+};
+
+document.getElementById('layout-select').onchange = function() {
+    const name = this.value;
+    if (!name) return;
+    fetch('/load_layout/' + name).then(r => r.json()).then(layout => {
+        applyLayout(layout);
+        updateDeckTree();
+    });
+};
+
+document.getElementById('btn-delete-layout').onclick = () => {
+    const select = document.getElementById('layout-select');
+    const name = select.value;
+    if (!name) return;
+    if (confirm('Delete layout "' + name + '"?')) {
+        fetch('/delete_layout/' + name, {method: 'DELETE'}).then(() => {
+            loadLayoutList();
+        });
+    }
+};
+
+updateView(); filterCards(); updateDeckTree(); loadLayoutList();
+</script>
+</body>
+</html>
