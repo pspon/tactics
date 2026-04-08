@@ -24,6 +24,7 @@ Layouts are persisted in the browser via localStorage (no server required).
 Run:  streamlit run streamlit_app.py
 """
 
+import base64
 import html as html_module
 import os
 import shutil
@@ -133,17 +134,18 @@ def fetch_card_library() -> int:
     return len(images)
 
 
-@st.cache_resource(show_spinner="Preparing card images…")
 def prepare_card_images() -> int:
     """Split each combined card image into separate front and back PNGs.
 
-    Runs once per Streamlit server lifecycle (cached by cache_resource).
-    Already-split images are skipped, so subsequent starts are fast.
+    Runs on every authenticated page load, but skips cards whose split
+    images already exist, so it is fast after the first run.  Not cached
+    with @st.cache_resource so that missing static files (e.g. after a
+    volume-mount or ephemeral-filesystem event) are always recovered.
     Returns the number of newly processed cards.
     """
     STATIC_FRONT.mkdir(parents=True, exist_ok=True)
     STATIC_BACK.mkdir(parents=True, exist_ok=True)
-    Path("layouts").mkdir(parents=True, exist_ok=True)
+    (_APP_DIR / "layouts").mkdir(parents=True, exist_ok=True)
 
     if not CARDS_DIR.exists():
         return 0
@@ -170,6 +172,26 @@ def _e(text: str) -> str:
     return html_module.escape(str(text))
 
 
+@st.cache_data(show_spinner=False)
+def _card_img_b64(filename: str) -> tuple:
+    """Return (front_data_uri, back_data_uri) for *filename*.
+
+    Reads the pre-split images produced by prepare_card_images() and
+    encodes them as PNG data URIs.  The board HTML is then fully
+    self-contained and does not depend on Streamlit's /app/static/ route,
+    which can fail inside a sandboxed components.html() iframe on
+    Streamlit Cloud.  Results are cached per filename for the lifetime
+    of the server process.
+    """
+    def _to_uri(path: Path) -> str:
+        if not path.exists():
+            return ""
+        with open(path, "rb") as fh:
+            return "data:image/png;base64," + base64.b64encode(fh.read()).decode()
+
+    return _to_uri(STATIC_FRONT / filename), _to_uri(STATIC_BACK / filename)
+
+
 def build_board_html(cards: list, themes: list) -> str:
     """Return the full board HTML with card data and themes injected."""
 
@@ -190,14 +212,16 @@ def build_board_html(cards: list, themes: list) -> str:
     for i, card in enumerate(cards):
         left = (i % 8) * 545
         top = (i // 8) * 883
+        front_src, back_src = _card_img_b64(card['filename'])
         board_cards_html += f"""
         <div class="card"
              data-deck="{_e(card['theme'])}"
              data-filename="{_e(card['filename'])}"
              data-type="{_e(card.get('type', 'Unknown'))}"
+             data-back-src="{back_src}"
              style="left:{left}px;top:{top}px;">
           <div class="card-image-wrapper">
-            <img src="/app/static/cards/front/{_e(card['filename'])}">
+            <img src="{front_src}">
           </div>
           <div class="card-meta"><strong>{_e(card['name'])}</strong></div>
         </div>"""
@@ -598,6 +622,12 @@ window.addEventListener('keydown', e => {{
 }});
 
 /* ---- FLIP / HIDE / SNAP ---- */
+/* Cache the original front src the first time a card is touched. */
+function getFrontSrc(card) {{
+  if (!card.dataset.frontSrc) card.dataset.frontSrc = card.querySelector('img').src;
+  return card.dataset.frontSrc;
+}}
+
 function flipSelectedCards(isOverlay = false) {{
   let selected = [...document.querySelectorAll('.card.selected')];
   if (isOverlay) {{
@@ -606,9 +636,8 @@ function flipSelectedCards(isOverlay = false) {{
   }}
   selected.forEach(card => {{
     const img = card.querySelector('img');
-    img.src = img.src.includes('/front/')
-      ? img.src.replace('/front/', '/back/')
-      : img.src.replace('/back/', '/front/');
+    const isFlipped = img.src !== getFrontSrc(card);
+    img.src = isFlipped ? getFrontSrc(card) : card.dataset.backSrc;
     if (isOverlay) document.getElementById('overlay').querySelector('img').src = img.src;
   }});
 }}
@@ -646,7 +675,7 @@ function getCurrentLayout() {{
         left     : pos.left,
         top      : pos.top,
         hidden   : card.classList.contains('hidden'),
-        flipped  : card.querySelector('img').src.includes('/back/')
+        flipped  : card.querySelector('img').src !== getFrontSrc(card)
       }};
     }}),
     view: {{ panX, panY, scale }}
@@ -656,8 +685,7 @@ function getCurrentLayout() {{
 function applyLayout(layout) {{
   cards.forEach(c => {{
     c.classList.remove('hidden');
-    const img = c.querySelector('img');
-    if (img.src.includes('/back/')) img.src = img.src.replace('/back/', '/front/');
+    c.querySelector('img').src = getFrontSrc(c);
   }});
   layout.cards.forEach(d => {{
     const card = cards.find(c => c.dataset.filename === d.filename);
@@ -665,7 +693,7 @@ function applyLayout(layout) {{
     card.style.left = d.left + 'px';
     card.style.top  = d.top  + 'px';
     if (d.hidden)  card.classList.add('hidden');
-    if (d.flipped) card.querySelector('img').src = card.querySelector('img').src.replace('/front/', '/back/');
+    if (d.flipped) card.querySelector('img').src = card.dataset.backSrc;
   }});
   panX = layout.view.panX; panY = layout.view.panY; scale = layout.view.scale;
   updateView();
@@ -753,12 +781,9 @@ def show_auth_page(allowed_users: Optional[List[str]]) -> None:
     restricted = allowed_users is not None
     if restricted:
         st.caption("Access is restricted to authorised users.")
-        tabs = st.tabs(["Login"])
-        tab_login = tabs[0]
-        tab_signup = None
     else:
         st.caption("Sign in or create an account to access the card board.")
-        tab_login, tab_signup = st.tabs(["Login", "Sign Up"])
+    tab_login, tab_signup = st.tabs(["Login", "Sign Up"])
 
     with tab_login:
         with st.form("login_form"):
@@ -777,28 +802,20 @@ def show_auth_page(allowed_users: Optional[List[str]]) -> None:
                 else:
                     st.error(f"Login failed: {msg}")
 
-    if tab_signup is not None:
-        with tab_signup:
-            with st.form("signup_form"):
-                new_user = st.text_input("Choose a username")
-                new_pass = st.text_input("Choose a password (min 8 characters)", type="password")
-                submitted = st.form_submit_button("Create account", use_container_width=True)
-            if submitted:
-                if not new_user:
-                    st.error("Username cannot be empty.")
+    with tab_signup:
+        with st.form("signup_form"):
+            new_user = st.text_input("Choose a username")
+            new_pass = st.text_input("Choose a password (min 8 characters)", type="password")
+            submitted = st.form_submit_button("Create account", use_container_width=True)
+        if submitted:
+            if not new_user:
+                st.error("Username cannot be empty.")
+            else:
+                ok, msg = signup_user(new_user, new_pass, allowed_users)
+                if ok:
+                    st.success("Account created! Switch to the Login tab to sign in.")
                 else:
-                    ok, msg = signup_user(new_user, new_pass)
-                    if ok:
-                        st.success("Account created! Switch to the Login tab to sign in.")
-                    else:
-                        st.error(f"Registration failed: {msg}")
-    elif restricted:
-        # Shown below the login tab when allowlist is active
-        st.info(
-            "New accounts must be created by an administrator.  \n"
-            "Use `python src/manage_users.py create <username>` on the server.",
-            icon="ℹ️",
-        )
+                    st.error(f"Registration failed: {msg}")
 
 
 def main():
