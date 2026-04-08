@@ -24,6 +24,7 @@ Layouts are persisted in the browser via localStorage (no server required).
 Run:  streamlit run streamlit_app.py
 """
 
+import base64
 import html as html_module
 import os
 import shutil
@@ -171,6 +172,26 @@ def _e(text: str) -> str:
     return html_module.escape(str(text))
 
 
+@st.cache_data(show_spinner=False)
+def _card_img_b64(filename: str) -> tuple:
+    """Return (front_data_uri, back_data_uri) for *filename*.
+
+    Reads the pre-split images produced by prepare_card_images() and
+    encodes them as PNG data URIs.  The board HTML is then fully
+    self-contained and does not depend on Streamlit's /app/static/ route,
+    which can fail inside a sandboxed components.html() iframe on
+    Streamlit Cloud.  Results are cached per filename for the lifetime
+    of the server process.
+    """
+    def _to_uri(path: Path) -> str:
+        if not path.exists():
+            return ""
+        with open(path, "rb") as fh:
+            return "data:image/png;base64," + base64.b64encode(fh.read()).decode()
+
+    return _to_uri(STATIC_FRONT / filename), _to_uri(STATIC_BACK / filename)
+
+
 def build_board_html(cards: list, themes: list) -> str:
     """Return the full board HTML with card data and themes injected."""
 
@@ -191,14 +212,16 @@ def build_board_html(cards: list, themes: list) -> str:
     for i, card in enumerate(cards):
         left = (i % 8) * 545
         top = (i // 8) * 883
+        front_src, back_src = _card_img_b64(card['filename'])
         board_cards_html += f"""
         <div class="card"
              data-deck="{_e(card['theme'])}"
              data-filename="{_e(card['filename'])}"
              data-type="{_e(card.get('type', 'Unknown'))}"
+             data-back-src="{back_src}"
              style="left:{left}px;top:{top}px;">
           <div class="card-image-wrapper">
-            <img src="/app/static/cards/front/{_e(card['filename'])}">
+            <img src="{front_src}">
           </div>
           <div class="card-meta"><strong>{_e(card['name'])}</strong></div>
         </div>"""
@@ -599,6 +622,12 @@ window.addEventListener('keydown', e => {{
 }});
 
 /* ---- FLIP / HIDE / SNAP ---- */
+/* Cache the original front src the first time a card is touched. */
+function getFrontSrc(card) {{
+  if (!card.dataset.frontSrc) card.dataset.frontSrc = card.querySelector('img').src;
+  return card.dataset.frontSrc;
+}}
+
 function flipSelectedCards(isOverlay = false) {{
   let selected = [...document.querySelectorAll('.card.selected')];
   if (isOverlay) {{
@@ -607,9 +636,8 @@ function flipSelectedCards(isOverlay = false) {{
   }}
   selected.forEach(card => {{
     const img = card.querySelector('img');
-    img.src = img.src.includes('/front/')
-      ? img.src.replace('/front/', '/back/')
-      : img.src.replace('/back/', '/front/');
+    const isFlipped = img.src !== getFrontSrc(card);
+    img.src = isFlipped ? getFrontSrc(card) : card.dataset.backSrc;
     if (isOverlay) document.getElementById('overlay').querySelector('img').src = img.src;
   }});
 }}
@@ -647,7 +675,7 @@ function getCurrentLayout() {{
         left     : pos.left,
         top      : pos.top,
         hidden   : card.classList.contains('hidden'),
-        flipped  : card.querySelector('img').src.includes('/back/')
+        flipped  : card.querySelector('img').src !== getFrontSrc(card)
       }};
     }}),
     view: {{ panX, panY, scale }}
@@ -657,8 +685,7 @@ function getCurrentLayout() {{
 function applyLayout(layout) {{
   cards.forEach(c => {{
     c.classList.remove('hidden');
-    const img = c.querySelector('img');
-    if (img.src.includes('/back/')) img.src = img.src.replace('/back/', '/front/');
+    c.querySelector('img').src = getFrontSrc(c);
   }});
   layout.cards.forEach(d => {{
     const card = cards.find(c => c.dataset.filename === d.filename);
@@ -666,7 +693,7 @@ function applyLayout(layout) {{
     card.style.left = d.left + 'px';
     card.style.top  = d.top  + 'px';
     if (d.hidden)  card.classList.add('hidden');
-    if (d.flipped) card.querySelector('img').src = card.querySelector('img').src.replace('/front/', '/back/');
+    if (d.flipped) card.querySelector('img').src = card.dataset.backSrc;
   }});
   panX = layout.view.panX; panY = layout.view.panY; scale = layout.view.scale;
   updateView();
