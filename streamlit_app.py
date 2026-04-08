@@ -133,17 +133,18 @@ def fetch_card_library() -> int:
     return len(images)
 
 
-@st.cache_resource(show_spinner="Preparing card images…")
 def prepare_card_images() -> int:
     """Split each combined card image into separate front and back PNGs.
 
-    Runs once per Streamlit server lifecycle (cached by cache_resource).
-    Already-split images are skipped, so subsequent starts are fast.
+    Runs on every authenticated page load, but skips cards whose split
+    images already exist, so it is fast after the first run.  Not cached
+    with @st.cache_resource so that missing static files (e.g. after a
+    volume-mount or ephemeral-filesystem event) are always recovered.
     Returns the number of newly processed cards.
     """
     STATIC_FRONT.mkdir(parents=True, exist_ok=True)
     STATIC_BACK.mkdir(parents=True, exist_ok=True)
-    Path("layouts").mkdir(parents=True, exist_ok=True)
+    (_APP_DIR / "layouts").mkdir(parents=True, exist_ok=True)
 
     if not CARDS_DIR.exists():
         return 0
@@ -753,12 +754,9 @@ def show_auth_page(allowed_users: Optional[List[str]]) -> None:
     restricted = allowed_users is not None
     if restricted:
         st.caption("Access is restricted to authorised users.")
-        tabs = st.tabs(["Login"])
-        tab_login = tabs[0]
-        tab_signup = None
     else:
         st.caption("Sign in or create an account to access the card board.")
-        tab_login, tab_signup = st.tabs(["Login", "Sign Up"])
+    tab_login, tab_signup = st.tabs(["Login", "Sign Up"])
 
     with tab_login:
         with st.form("login_form"):
@@ -777,28 +775,20 @@ def show_auth_page(allowed_users: Optional[List[str]]) -> None:
                 else:
                     st.error(f"Login failed: {msg}")
 
-    if tab_signup is not None:
-        with tab_signup:
-            with st.form("signup_form"):
-                new_user = st.text_input("Choose a username")
-                new_pass = st.text_input("Choose a password (min 8 characters)", type="password")
-                submitted = st.form_submit_button("Create account", use_container_width=True)
-            if submitted:
-                if not new_user:
-                    st.error("Username cannot be empty.")
+    with tab_signup:
+        with st.form("signup_form"):
+            new_user = st.text_input("Choose a username")
+            new_pass = st.text_input("Choose a password (min 8 characters)", type="password")
+            submitted = st.form_submit_button("Create account", use_container_width=True)
+        if submitted:
+            if not new_user:
+                st.error("Username cannot be empty.")
+            else:
+                ok, msg = signup_user(new_user, new_pass, allowed_users)
+                if ok:
+                    st.success("Account created! Switch to the Login tab to sign in.")
                 else:
-                    ok, msg = signup_user(new_user, new_pass)
-                    if ok:
-                        st.success("Account created! Switch to the Login tab to sign in.")
-                    else:
-                        st.error(f"Registration failed: {msg}")
-    elif restricted:
-        # Shown below the login tab when allowlist is active
-        st.info(
-            "New accounts must be created by an administrator.  \n"
-            "Use `python src/manage_users.py create <username>` on the server.",
-            icon="ℹ️",
-        )
+                    st.error(f"Registration failed: {msg}")
 
 
 def main():
